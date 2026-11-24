@@ -4,6 +4,7 @@ Luuln Bot — Final Build (with file check + short proxy commands)
 pip install python-telegram-bot httpx pillow pyzipper requests beautifulsoup4
 """
 
+import os
 import asyncio, concurrent.futures, csv, io, json, logging, random, re, sqlite3
 import string, threading, time, zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -11,9 +12,13 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import PurePath
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import httpx
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (Application, CommandHandler, CallbackQueryHandler,
                           MessageHandler, ContextTypes, filters)
@@ -31,15 +36,16 @@ except Exception:
     pass
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIG
+# CONFIG — read from environment
 # ═══════════════════════════════════════════════════════════════════
-BOT_TOKEN = "9144552229:AAFSdDI_d5u1dY-u_va1gXKaMWmBhHbuY6A"
-ADMIN_ID = 6207431030
-ALLOWED_GROUP = "engtopwin1"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ALLOWED_GROUP = os.getenv("ALLOWED_GROUP", "engtopwin1").strip()
 MAX_CARDS = 10000
 TXT_THRESHOLD = 10
 BIN_TIMEOUT = 8.0
 MAX_FILE_PROXIES = 10000
+PORT = int(os.getenv("PORT", "8080"))
 POOL = ThreadPoolExecutor(max_workers=32)
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
@@ -48,7 +54,7 @@ log = logging.getLogger("luuln")
 BOT_USERNAME = None
 BIN_CACHE = {}
 RATE = {}
-DB = "luuln.db"
+DB = os.getenv("DB_PATH", "luuln.db")
 
 SUB_TIERS = {
     "free":  {"rate": 10,   "max": 1000,  "label": "Free",  "emoji": "🆓"},
