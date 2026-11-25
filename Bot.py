@@ -50,13 +50,10 @@ PORT = int(os.getenv("PORT", "8080"))
 POOL = ThreadPoolExecutor(max_workers=32)
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
-
-# ── Silence noisy libraries (getUpdates spam, http request spam) ──
+# Silence noisy libs (getUpdates spam, werkzeug request spam, urllib3 retries)
 for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext",
-               "werkzeug", "urllib3", "urllib3.connectionpool",
-               "asyncio", "apscheduler"):
+               "werkzeug", "urllib3", "urllib3.connectionpool"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
-
 log = logging.getLogger("luuln")
 
 BOT_USERNAME = None
@@ -82,7 +79,6 @@ health_app = Flask(__name__)
 
 @health_app.route("/")
 def _index():
-    """Visible landing page — proves the bot is online."""
     bot = BOT_USERNAME or "starting"
     now = datetime.utcnow().isoformat() + "Z"
     html = (
@@ -97,7 +93,7 @@ def _index():
         f"<p style='margin:6px 0'>Time: <code>{now}</code></p>"
         "<p style='color:#3fb950;font-weight:bold;margin-top:16px'>Status: running</p>"
         "<p style='color:#8b949e;margin-top:24px;font-size:13px'>"
-        "Ping endpoint: <code>/ping</code> · Health JSON: <code>/health</code></p>"
+        "Ping: <code>/ping</code> · Health: <code>/health</code></p>"
         "</div></body></html>"
     )
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
@@ -110,12 +106,22 @@ def _health():
 @health_app.route("/ping")
 @health_app.route("/cron")
 def _ping():
-    """Minimal 200 for cron-job.org / uptime pings."""
     return "ok", 200
 
 def _run_health():
     log.info(f"🌐 Health server on :{PORT}")
     health_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False, threaded=True)
+
+# ═══════════════════════════════════════════════════════════════════
+# USAGE HELPER
+# ═══════════════════════════════════════════════════════════════════
+def usage(*lines):
+    """Build a copyable usage block. Each line already has formatting."""
+    body = "\n".join(lines)
+    return f"❓ <b>Usage</b>\n{body}"
+
+async def reply_usage(update, *lines):
+    await update.message.reply_text(usage(*lines), parse_mode="HTML")
 
 # ═══════════════════════════════════════════════════════════════════
 # PRIVACY HELPERS
@@ -1231,7 +1237,9 @@ async def do_gen(update, ctx, bins, count, expiry, fixed_cvv, partial=None, inpu
     for bp in bins:
         okv, vinfo = validate_bin(bp)
         if not okv:
-            await update.message.reply_text(f"❌ Invalid BIN <code>{bp}</code>", parse_mode="HTML"); return
+            await update.message.reply_text(
+                f"❌ Invalid BIN <code>{bp}</code>\nReason: {vinfo}", parse_mode="HTML")
+            return
         all_bins.append(bp)
     if not all_bins: return
     from_group = in_group(update)
@@ -1331,13 +1339,10 @@ async def cmd_start(update, ctx):
             try: await ctx.bot.send_message(ref_by, "🎁 <b>Referral: 7d Pro!</b>", parse_mode="HTML")
             except Exception: pass
         db_setting_set(f"ref_rewarded_{u.id}", "1")
-    if in_dm(update) or not in_group(update):
-        await update.message.reply_text(
-            f"👋 Welcome <b>{u.first_name}</b>\n\n"
-            f"📖 /help — all commands\n🕸️ /ip — proxy menu\n🎴 /gen BIN — generate",
-            parse_mode="HTML", reply_markup=kb_main()); return
     await update.message.reply_text(
-        f"👋 Welcome <b>{u.first_name}</b>\n\nUse /help:", parse_mode="HTML", reply_markup=kb_main())
+        f"👋 Welcome <b>{u.first_name}</b>\n\n"
+        f"📖 /help — all commands\n🕸️ /ip — proxy menu\n🎴 /gen BIN — generate",
+        parse_mode="HTML", reply_markup=kb_main())
 
 async def cmd_help(update, ctx):
     text = (
@@ -1346,23 +1351,34 @@ async def cmd_help(update, ctx):
         "🔒 <b>PRIVACY:</b> All results are sent to your DM.\n"
         "Group messages are masked and auto-deleted after 60s.\n\n"
         "🎴 <b>CARDS</b>\n"
-        "<code>/gen BIN</code> · <code>/gen BIN COUNT</code>\n"
-        "<code>/gen BIN|MM|YY</code> · <code>/gen BIN|MM|YY|cvv|N</code>\n"
-        "<code>/gen 5194684364</code> — 10 digits\n"
-        "<code>/gen 519468436466760</code> — 15 digits\n"
+        "<code>/gen BIN</code>\n"
+        "<code>/gen BIN COUNT</code>\n"
+        "<code>/gen BIN|MM|YY</code>\n"
+        "<code>/gen BIN|MM|YY|cvv|N</code>\n"
+        "Examples:\n"
+        "<code>/gen 519468436466760</code>\n"
+        "<code>/gen 519468436466760|50</code>\n"
+        "<code>/gen 519468436466760|02|28</code>\n\n"
         "<code>/genv BIN|MM|YY</code> — all CVVs\n"
-        "<code>/bin BIN</code> · <code>/check CARD</code>\n"
-        "<code>/info CARD</code> · <code>/checkfile</code>\n\n"
-        "🕸️ <b>PROXY — SHORT</b>\n"
-        "<code>/ip</code> — menu · <code>/chkip</code> — scrape 20\n"
+        "<code>/bin BIN</code> — BIN lookup\n"
+        "<code>/check CARD</code> — Luhn + brand\n"
+        "<code>/info CARD</code> — bank/country\n"
+        "<code>/checkfile</code> — bulk analyze (DM)\n\n"
+        "🕸️ <b>PROXY</b>\n"
+        "<code>/ip</code> — proxy menu\n"
+        "<code>/chkip</code> — scrape 20 proxies\n"
         "<code>/chkip 40</code> / <code>/chkip 10</code>\n"
-        "<code>/rt</code> — retest · <code>/chkp IP:PORT</code> — single\n"
-        "<code>/ipm</code> — check from file\n"
+        "<code>/ipm</code> — check proxies from file (DM)\n"
+        "<code>/chkp 1.2.3.4:8080</code> — check single\n"
+        "<code>/rt</code> — retest saved\n"
         "<code>/pl</code> — download · <code>/ps</code> — stats\n\n"
         "🧹 <b>CLEANER</b> (DM): <code>/clear</code>\n\n"
-        "🎫 <b>SUBS:</b> <code>/sub</code> · <code>/redeem CODE</code> · <code>/ref</code>\n\n"
-        "📊 <b>STATS:</b> <code>/me</code> · <code>/stats</code> · <code>/leaderboard</code>\n"
-        "<code>/fav</code> · <code>/favadd BIN</code> · <code>/setcountry CC</code>"
+        "🎫 <b>SUBS</b>\n"
+        "<code>/sub</code> · <code>/redeem CODE</code> · <code>/ref</code>\n\n"
+        "📊 <b>STATS</b>\n"
+        "<code>/me</code> · <code>/stats</code> · <code>/leaderboard</code>\n"
+        "<code>/fav</code> · <code>/favadd BIN</code> · <code>/setcountry CC</code>\n\n"
+        "💡 <i>Tap any code block above to copy it.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb_help())
 
@@ -1388,7 +1404,11 @@ async def cmd_sub(update, ctx):
     if u.id == ADMIN_ID:
         await update.message.reply_text("👑 Admin — VIP", reply_markup=kb_back()); return
     if tier == "free":
-        await update.message.reply_text("📋 Free\n\n<code>/redeem CODE</code>", parse_mode="HTML", reply_markup=kb_back()); return
+        await update.message.reply_text(
+            "📋 Free tier\n\n"
+            "🔓 Unlock more with a code:\n"
+            "<code>/redeem CODE</code>",
+            parse_mode="HTML", reply_markup=kb_back()); return
     exp_dt = datetime.fromisoformat(exp) if exp else None
     days_left = max(0, (exp_dt - datetime.utcnow()).days) if exp_dt else 0
     await update.message.reply_text(
@@ -1400,7 +1420,11 @@ async def cmd_sub(update, ctx):
 async def cmd_redeem(update, ctx):
     u = update.effective_user
     if not ctx.args:
-        await update.message.reply_text("<code>/redeem CODE</code>", parse_mode="HTML"); return
+        await reply_usage(update,
+            "<code>/redeem CODE</code>\n",
+            "Example:\n",
+            "<code>/redeem ABCD-1234-EFGH</code>")
+        return
     ok, res = db_redeem(ctx.args[0].strip().upper(), u.id)
     if ok:
         await update.message.reply_text(f"✅ {res[0].upper()} for {res[1]} days",
@@ -1412,7 +1436,9 @@ async def cmd_ref(update, ctx):
     u = update.effective_user
     link = f"https://t.me/{BOT_USERNAME or 'bot'}?start=ref_{u.id}"
     await update.message.reply_text(
-        f"🎁 <code>{link}</code>\n\nInvites: {db_referral_count(u.id)}",
+        f"🎁 <b>Your referral link</b>\n\n<code>{link}</code>\n\n"
+        f"Invites: {db_referral_count(u.id)}\n\n"
+        f"<i>Each new user = 7d Pro for you.</i>",
         parse_mode="HTML", reply_markup=kb_back())
 
 async def cmd_leaderboard(update, ctx):
@@ -1437,16 +1463,25 @@ async def cmd_stats(update, ctx):
         else: await update.message.reply_text("📩 Open DM", reply_markup=kb_dm_only())
 
 async def cmd_setcountry(update, ctx):
-    if not ctx.args or len(ctx.args[0]) != 2:
-        await update.message.reply_text("Usage: <code>/setcountry tr</code>", parse_mode="HTML"); return
+    if not ctx.args or len(ctx.args[0]) != 2 or not ctx.args[0].isalpha():
+        await reply_usage(update,
+            "<code>/setcountry CC</code>\n",
+            "CC = 2-letter country code.\n",
+            "Example:\n",
+            "<code>/setcountry tr</code>")
+        return
     state(update.effective_user.id)["default_country"] = ctx.args[0].upper()
-    await update.message.reply_text(f"✅ {ctx.args[0].upper()}")
+    await update.message.reply_text(f"✅ Default country set to <b>{ctx.args[0].upper()}</b>",
+                                      parse_mode="HTML")
 
 async def cmd_fav(update, ctx):
     u = update.effective_user
     rows = db_fav_list(u.id)
     if not rows:
-        await update.message.reply_text("None. <code>/favadd BIN</code>", parse_mode="HTML"); return
+        await update.message.reply_text(
+            "⭐ <b>No favorites yet</b>\n\n"
+            "Add one:\n<code>/favadd 519468436466760</code>",
+            parse_mode="HTML"); return
     btns = [[InlineKeyboardButton(r[0], callback_data=f"g|{r[0]}")] for r in rows]
     btns.append([InlineKeyboardButton("⬅️", callback_data="bk")])
     ok = await send_dm(ctx, u.id, text="⭐ <b>Favorites</b>", reply_markup=InlineKeyboardMarkup(btns))
@@ -1454,36 +1489,70 @@ async def cmd_fav(update, ctx):
         await send_group_notice(update, ctx, "⭐ FAVORITES", ["📩 Sent to DM"])
 
 async def cmd_favadd(update, ctx):
-    if not ctx.args: return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/favadd BIN [label]</code>\n",
+            "Example:\n",
+            "<code>/favadd 519468436466760 visa-test</code>")
+        return
     u = update.effective_user; bp = ctx.args[0]
     okv, _ = validate_bin(bp)
-    if not okv: return
+    if not okv:
+        await update.message.reply_text(
+            f"❌ Invalid BIN <code>{bp}</code>\n\nTry a known brand prefix:\n"
+            "<code>4</code> Visa · <code>5</code> MC · <code>34</code> Amex",
+            parse_mode="HTML"); return
     db_fav_add(u.id, bp, " ".join(ctx.args[1:]))
-    await update.message.reply_text(f"✅ {mask_bin(bp)} added")
+    await update.message.reply_text(f"✅ {mask_bin(bp)} added to favorites")
 
 async def cmd_gen(update, ctx):
-    if not in_group(update): return
     u = update.effective_user
-    if db_is_banned(u.id): return
+    if db_is_banned(u.id):
+        await update.message.reply_text("🚫 Banned"); return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/gen BIN</code>\n",
+            "<code>/gen BIN COUNT</code>\n",
+            "<code>/gen BIN|MM|YY</code>\n",
+            "<code>/gen BIN|MM|YY|cvv|N</code>\n\n",
+            "Examples:\n",
+            "<code>/gen 519468436466760</code>\n",
+            "<code>/gen 519468436466760|50</code>\n",
+            "<code>/gen 519468436466760|02|28</code>")
+        return
     ok, rem, tier, max_cards = check_rate(u.id)
     if not ok:
-        await update.message.reply_text(f"⚠️ Limit ({tier}): {SUB_TIERS[tier]['rate']}/hr", parse_mode="HTML"); return
-    if not ctx.args:
-        await update.message.reply_text("Use /help", reply_markup=kb_help()); return
+        await update.message.reply_text(
+            f"⚠️ Rate limit reached for <b>{tier}</b> tier: {SUB_TIERS[tier]['rate']}/hr\n\n"
+            f"Upgrade with <code>/redeem CODE</code>",
+            parse_mode="HTML"); return
     p = parse_gen(" ".join(ctx.args), max_cards)
-    if not p: return
+    if not p:
+        await reply_usage(update,
+            "Could not parse input.\n\n",
+            "Format: <code>/gen BIN[|MM|YY][|COUNT]</code>\n",
+            "Example: <code>/gen 519468436466760|5</code>")
+        return
     await do_gen(update, ctx, **p)
 
 async def cmd_genv(update, ctx):
-    if not in_group(update): return
     u = update.effective_user
+    if db_is_banned(u.id):
+        await update.message.reply_text("🚫 Banned"); return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/genv BIN|MM|YY [COUNT]</code>\n\n",
+            "Example:\n",
+            "<code>/genv 519468436466760|02|28</code>\n",
+            "<code>/genv 519468436466760|02|28|100</code>")
+        return
     ok, rem, tier, max_cards = check_rate(u.id)
     if not ok:
-        await update.message.reply_text("⚠️ Limit", parse_mode="HTML"); return
-    if not ctx.args:
-        await update.message.reply_text("<code>/genv BIN|MM|YY</code>", parse_mode="HTML"); return
+        await update.message.reply_text(f"⚠️ Rate limit ({tier}): {SUB_TIERS[tier]['rate']}/hr",
+                                          parse_mode="HTML"); return
     parts = [p for p in re.split(r"\s+", " ".join(ctx.args).replace("|"," | ")) if p and p != "|"]
-    if not parts: return
+    if not parts:
+        await reply_usage(update, "<code>/genv BIN|MM|YY</code>"); return
     bin_token = parts[0]
     nums = [p for p in parts[1:] if p.isdigit()]
     mm = yy = count = None
@@ -1493,12 +1562,22 @@ async def cmd_genv(update, ctx):
         if len(nums) >= 3:
             try: count = int(nums[2])
             except Exception: pass
-    if not mm or not yy: return
+    if not mm or not yy:
+        await reply_usage(update,
+            "Missing or invalid expiry.\n\n",
+            "Format: <code>/genv BIN|MM|YY</code>\n",
+            "Example: <code>/genv 519468436466760|02|28</code>")
+        return
     r = resolve_input(bin_token)
-    if not r: return
+    if not r:
+        await reply_usage(update,
+            "Invalid BIN/prefix (need 4–19 digits).\n\n",
+            "Example: <code>/genv 519468436466760|02|28</code>")
+        return
     bp = r["bin_prefix"]
     okv, vinfo = validate_bin(bp)
-    if not okv: return
+    if not okv:
+        await update.message.reply_text(f"❌ Invalid BIN: {vinfo}"); return
     brand = vinfo["brand"]; dl = vinfo["default_length"]
     card = complete_partial(r["partial"], dl) if r["partial"] else gen_from_bin(bp, dl)
     c_len = 4 if brand == "AMEX" else 3
@@ -1520,14 +1599,20 @@ async def cmd_genv(update, ctx):
         await update.message.reply_text("📩 Open DM", reply_markup=kb_dm_only())
 
 async def cmd_bin(update, ctx):
-    if not in_group(update): return
     u = update.effective_user
-    if not ctx.args: return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/bin BIN</code>\n\n",
+            "Example:\n<code>/bin 519468436466760</code>")
+        return
     r = resolve_input(" ".join(ctx.args))
-    if not r: return
+    if not r:
+        await reply_usage(update, "Need 4–19 digits of a BIN/card.\n\nExample: <code>/bin 519468</code>")
+        return
     bp = r["bin_prefix"]
     okv, vinfo = validate_bin(bp)
-    if not okv: return
+    if not okv:
+        await update.message.reply_text(f"❌ Invalid BIN: {vinfo}"); return
     info = await lookup_bin(bp)
     brand = vinfo["brand"]
     txt = f"🔍 <b>BIN Details</b>\n<code>{bp}</code>\nBrand: {brand}\nLengths: {', '.join(map(str,vinfo['lengths']))}\n"
@@ -1538,11 +1623,16 @@ async def cmd_bin(update, ctx):
     else: await update.message.reply_text("📩 Open DM", reply_markup=kb_dm_only())
 
 async def cmd_check(update, ctx):
-    if not in_group(update): return
     u = update.effective_user
-    if not ctx.args: return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/check CARD</code>\n\n",
+            "Example:\n<code>/check 4532015112830366</code>")
+        return
     d = re.sub(r"\D","", " ".join(ctx.args))
-    if len(d) < 4: return
+    if len(d) < 4:
+        await reply_usage(update, "Need at least 4 digits.\nExample: <code>/check 4532015112830366</code>")
+        return
     brand, lens, _ = detect_brand(d[:8])
     v = luhn_check(d); lo = len(d) in lens if lens else False
     info = await lookup_bin(d[:8])
@@ -1554,16 +1644,23 @@ async def cmd_check(update, ctx):
     else: await update.message.reply_text("📩 Open DM", reply_markup=kb_dm_only())
 
 async def cmd_info(update, ctx):
-    if not in_group(update): return
     u = update.effective_user
-    if not ctx.args: return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/info CARD</code>\n\n",
+            "Example:\n<code>/info 4532015112830366</code>")
+        return
     d = re.sub(r"\D","", " ".join(ctx.args))
-    if len(d) < 8: return
+    if len(d) < 8:
+        await reply_usage(update, "Need 8+ digits.\nExample: <code>/info 4532015112830366</code>")
+        return
     okv, vinfo = validate_bin(d[:8])
-    if not okv: return
+    if not okv:
+        await update.message.reply_text(f"❌ Invalid BIN prefix: {vinfo}"); return
     card = d if len(d) == 16 else complete_partial(d, vinfo["default_length"])
     info = await lookup_bin(d[:8])
-    if not info or info.get("error"): return
+    if not info or info.get("error"):
+        await update.message.reply_text("⚠️ BIN lookup failed (rate limit or unknown)"); return
     txt = f"👤 <b>Card Data</b>\n<code>{card}</code>\nCountry: {info['emoji']} {info['country']}\nBank: {info['bank']}"
     state(u.id)["last_card"] = card
     ok = await send_dm(ctx, u.id, text=txt, reply_markup=kb_back())
@@ -1573,9 +1670,13 @@ async def cmd_info(update, ctx):
 async def cmd_checkfile(update, ctx):
     u = update.effective_user
     if not in_dm(update):
-        await update.message.reply_text("📎 DM only", reply_markup=kb_dm_only()); return
+        await update.message.reply_text(
+            "📎 <b>File check works in DM only</b>\n\nTap below to open DM, then /checkfile again.",
+            parse_mode="HTML", reply_markup=kb_dm_only()); return
     state(u.id)["awaiting"] = "checkfile"
-    await update.message.reply_text("📎 Upload file (one card per line).", reply_markup=kb_back())
+    await update.message.reply_text(
+        "📎 <b>Upload a card file</b>\n\nOne card per line.\nMax 5MB.\n\n<i>/cancel to abort</i>",
+        parse_mode="HTML", reply_markup=kb_back())
 
 async def cmd_cancel(update, ctx):
     state(update.effective_user.id)["awaiting"] = None
@@ -1592,7 +1693,11 @@ async def cmd_clear(update, ctx):
         await update.message.reply_text("🚫 Banned"); return
     state(u.id)["awaiting"] = "clear_file"
     await update.message.reply_text(
-        "🧹 <b>File Cleaner</b>\n\n📎 Send .txt/.csv\nMax 5MB\n\n<i>/cancel to abort</i>",
+        "🧹 <b>File Cleaner</b>\n\n"
+        "📎 Send .txt or .csv\n"
+        "Removes empty lines and duplicates.\n"
+        "Max 5MB.\n\n"
+        "<i>/cancel to abort</i>",
         parse_mode="HTML", reply_markup=kb_clear_prompt())
 
 async def _process_clear(update, ctx, file_bytes, filename):
@@ -1635,15 +1740,16 @@ async def cmd_proxy(update, ctx):
     s = st["stats"]
     text = (
         f"🕸️ <b>Proxy Scraper</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Status:</b> {running}\n<b>Cached:</b> <code>{len(st['valid'])}</code>\n"
+        f"<b>Status:</b> {running}\n"
+        f"<b>Cached:</b> <code>{len(st['valid'])}</code>\n"
         f"<b>Collected:</b> <code>{s.get('collected', 0)}</code> → <b>{s.get('valid', 0)}</b> valid\n\n"
         f"<b>Commands:</b>\n"
-        f"/ip — this menu\n"
-        f"/chkip [N] — scrape proxies\n"
-        f"/ipm — check from file\n"
-        f"/chkp IP:PORT — single check\n"
-        f"/rt — retest saved\n"
-        f"/pl — download · /ps — stats\n\n"
+        f"<code>/ip</code> — this menu\n"
+        f"<code>/chkip [N]</code> — scrape (default 20)\n"
+        f"<code>/ipm</code> — check from file (DM)\n"
+        f"<code>/chkp IP:PORT</code> — single check\n"
+        f"<code>/rt</code> — retest saved\n"
+        f"<code>/pl</code> — download · <code>/ps</code> — stats\n\n"
         f"🔒 All results go to your DM."
     )
     if in_dm(update):
@@ -1657,14 +1763,25 @@ async def cmd_scrape(update, ctx):
         await update.message.reply_text("🚫 Banned"); return
     st = _pstate(u.id)
     if st["running"]:
-        await update.message.reply_text("⚠️ Already running"); return
+        await update.message.reply_text("⚠️ Already running. Wait or tap ⏹️ Stop."); return
     workers = 20
-    if ctx.args and ctx.args[0].isdigit(): workers = min(int(ctx.args[0]), 50)
+    if ctx.args:
+        if not ctx.args[0].isdigit():
+            await reply_usage(update,
+                "<code>/chkip [WORKERS]</code>\n\n",
+                "WORKERS = 10, 20, 40 (max 50). Default 20.\n\n",
+                "Examples:\n",
+                "<code>/chkip</code>\n",
+                "<code>/chkip 40</code>")
+            return
+        workers = min(int(ctx.args[0]), 50)
     from_group = in_group(update)
     try:
         dm_msg = await ctx.bot.send_message(u.id, "🕸️ Starting scrape...")
     except Exception:
-        await update.message.reply_text("📩 Open DM first: /start", reply_markup=kb_dm_only())
+        await update.message.reply_text(
+            "📩 Open DM first: /start\n\nThen re-run <code>/chkip</code>",
+            parse_mode="HTML", reply_markup=kb_dm_only())
         return
     if from_group:
         await send_group_notice(update, ctx, "🕸️ SCRAPE STARTED", [
@@ -1680,7 +1797,14 @@ async def cmd_retest(update, ctx):
     if st["running"]:
         await update.message.reply_text("⚠️ Already running"); return
     workers = 20
-    if ctx.args and ctx.args[0].isdigit(): workers = min(int(ctx.args[0]), 50)
+    if ctx.args:
+        if not ctx.args[0].isdigit():
+            await reply_usage(update,
+                "<code>/rt [WORKERS]</code>\n\n",
+                "Default 20. Max 50.\n\n",
+                "Example:\n<code>/rt</code>\n<code>/rt 40</code>")
+            return
+        workers = min(int(ctx.args[0]), 50)
     from_group = in_group(update)
     try:
         dm_msg = await ctx.bot.send_message(u.id, "🔄 Loading saved proxies...")
@@ -1696,14 +1820,22 @@ async def cmd_checkproxy(update, ctx):
     if db_is_banned(u.id):
         await update.message.reply_text("🚫 Banned"); return
     if not ctx.args:
-        await update.message.reply_text("🔍 <code>/chkp 1.2.3.4:8080</code>", parse_mode="HTML"); return
+        await reply_usage(update,
+            "<code>/chkp IP:PORT</code>\n\n",
+            "Example:\n<code>/chkp 1.2.3.4:8080</code>")
+        return
     raw = " ".join(ctx.args).strip()
     m = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[:\s]+(\d{1,5})', raw)
     if not m:
-        await update.message.reply_text("❌ Use: <code>/chkp 1.2.3.4:8080</code>", parse_mode="HTML"); return
+        await reply_usage(update,
+            "Could not parse IP:PORT.\n\n",
+            "Format: <code>/chkp 1.2.3.4:8080</code>")
+        return
     ip, port = m.group(1), m.group(2)
     if not _p_ip_ok(ip) or not (1 <= int(port) <= 65535):
-        await update.message.reply_text("❌ Invalid IP/port", parse_mode="HTML"); return
+        await update.message.reply_text(
+            "❌ Invalid IP or port.\n\nFormat: <code>/chkp 1.2.3.4:8080</code>",
+            parse_mode="HTML"); return
     proxy_str = f"{ip}:{port}"
     from_group = in_group(update)
     try:
@@ -1741,16 +1873,20 @@ async def cmd_mcheckproxy(update, ctx):
     if db_is_banned(u.id):
         await update.message.reply_text("🚫 Banned"); return
     if not in_dm(update):
-        await update.message.reply_text("📎 File check works in DM only", reply_markup=kb_dm_only()); return
+        await update.message.reply_text(
+            "📎 <b>File check works in DM only</b>\n\n"
+            "Tap below, then /ipm again.",
+            parse_mode="HTML", reply_markup=kb_dm_only()); return
     st = _pstate(u.id)
     if st["running"]:
-        await update.message.reply_text("⚠️ Already running"); return
+        await update.message.reply_text("⚠️ Already running. Wait or tap ⏹️ Stop."); return
     state(u.id)["awaiting"] = "mchk_file"
     await update.message.reply_text(
         "📄 <b>Check Proxies From File</b>\n\n"
-        "Send .txt with proxies:\n<code>1.2.3.4:8080</code>\n"
+        "📎 Send a .txt file, one proxy per line:\n"
+        "<code>1.2.3.4:8080</code>\n\n"
         f"Max: <b>{MAX_FILE_PROXIES:,}</b>\n\n"
-        "Output: <code>file_alive_N.txt</code> + <code>file_dead_N.txt</code>\n\n"
+        "You'll get back: <code>file_alive_N.txt</code> + <code>file_dead_N.txt</code>\n\n"
         "<i>/cancel to abort</i>", parse_mode="HTML", reply_markup=kb_clear_prompt())
 
 async def _process_mchk_file(update, ctx, file_bytes, filename):
@@ -1759,7 +1895,10 @@ async def _process_mchk_file(update, ctx, file_bytes, filename):
         await update.message.reply_text(f"❌ Decode: {e}"); return
     proxies = _parse_proxy_file(content)
     if not proxies:
-        await update.message.reply_text("❌ No valid proxies.", parse_mode="HTML"); return
+        await update.message.reply_text(
+            "❌ <b>No valid proxies</b>\n\n"
+            "Make sure each line is:\n<code>1.2.3.4:8080</code>",
+            parse_mode="HTML"); return
     seen = set(); unique = []
     for p in proxies:
         if p not in seen: seen.add(p); unique.append(p)
@@ -1767,8 +1906,10 @@ async def _process_mchk_file(update, ctx, file_bytes, filename):
     if total > MAX_FILE_PROXIES:
         unique = unique[:MAX_FILE_PROXIES]; total = MAX_FILE_PROXIES
     msg = await update.message.reply_text(
-        f"📄 <b>File Loaded</b>\n\nFile: <code>{filename}</code>\n"
-        f"Proxies: <code>{len(proxies):,}</code>\nAfter dedup: <code>{total:,}</code>\n\n"
+        f"📄 <b>File Loaded</b>\n\n"
+        f"File: <code>{filename}</code>\n"
+        f"Proxies: <code>{len(proxies):,}</code>\n"
+        f"After dedup: <code>{total:,}</code>\n\n"
         f"<i>Testing with 30 workers...</i>", parse_mode="HTML")
     await _do_file_check(ctx, update.effective_user.id, msg, unique, workers=30)
 
@@ -1786,7 +1927,9 @@ async def cmd_proxylist(update, ctx):
             if r and r[0]: valid = [p for p in r[0].split("\n") if p]
         except Exception: pass
     if not valid:
-        await update.message.reply_text("No proxies. /chkip first.", reply_markup=kb_proxy_menu()); return
+        await update.message.reply_text(
+            "📭 <b>No proxies saved</b>\n\nRun <code>/chkip</code> first.",
+            parse_mode="HTML", reply_markup=kb_proxy_menu()); return
     buf = io.BytesIO("\n".join(valid).encode()); buf.name = f"proxies_{len(valid)}.txt"; buf.seek(0)
     try:
         await ctx.bot.send_document(u.id, document=InputFile(buf, filename=buf.name),
@@ -1806,8 +1949,13 @@ async def cmd_proxystats(update, ctx):
         c.close()
         if r and r[0]: db_count = len([p for p in r[0].split("\n") if p])
     except Exception: pass
-    txt = (f"📊 <b>Proxy Stats</b>\n\nRunning: {st['running']}\nIn memory: {len(st['valid'])}\n"
-           f"In DB: {db_count}\nCollected: {s.get('collected', 0)}\nValid: {s.get('valid', 0)}\nRejected: {s.get('rejected', 0)}")
+    txt = (f"📊 <b>Proxy Stats</b>\n\n"
+           f"Running: {st['running']}\n"
+           f"In memory: {len(st['valid'])}\n"
+           f"In DB: {db_count}\n"
+           f"Collected: {s.get('collected', 0)}\n"
+           f"Valid: {s.get('valid', 0)}\n"
+           f"Rejected: {s.get('rejected', 0)}")
     ok = await send_dm(ctx, u.id, text=txt, reply_markup=kb_proxy_menu())
     if in_group(update) and ok:
         await send_group_notice(update, ctx, "📊 PROXY STATS", ["📩 Sent to DM"])
@@ -1820,37 +1968,63 @@ async def cmd_admin(update, ctx):
         await update.message.reply_text("⛔ Denied"); return
     if not in_dm(update):
         await update.message.reply_text("🔒 DM only", reply_markup=kb_dm_only()); return
-    await update.message.reply_text("🎛️ <b>Admin</b>", parse_mode="HTML", reply_markup=kb_admin())
+    await update.message.reply_text("🎛️ <b>Admin Panel</b>", parse_mode="HTML", reply_markup=kb_admin())
 
 async def cmd_addsub(update, ctx):
-    if not admin_dm_required(update) or len(ctx.args) < 3: return
+    if not admin_dm_required(update): return
+    if len(ctx.args) < 3:
+        await reply_usage(update,
+            "<code>/addsub UID TIER DAYS</code>\n\n",
+            "TIER: free | trial | pro | vip\n",
+            "DAYS: 1d, 7d, 30d, 90d, 180d, 365d, life (or number)\n\n",
+            "Example:\n",
+            "<code>/addsub 123456789 pro 30d</code>")
+        return
     try: uid = int(ctx.args[0])
-    except Exception: return
+    except Exception:
+        await reply_usage(update, "UID must be a number.\n<code>/addsub 123456789 pro 30d</code>"); return
     tier = ctx.args[1].lower()
-    if tier not in SUB_TIERS: return
+    if tier not in SUB_TIERS:
+        await reply_usage(update, f"TIER must be one of: {', '.join(SUB_TIERS.keys())}"); return
     try: days = SUB_DURATIONS.get(ctx.args[2].lower()) or int(ctx.args[2])
-    except Exception: return
+    except Exception:
+        await reply_usage(update, "DAYS must be e.g. 30d or 30"); return
     if db_set_sub(uid, tier, days, by_admin=update.effective_user.id):
         try: await ctx.bot.send_message(uid, f"🎉 {tier.upper()} for {days}d!", parse_mode="HTML")
         except Exception: pass
-        await update.message.reply_text(f"✅ {uid} → {tier}")
+        await update.message.reply_text(f"✅ {uid} → {tier} ({days}d)")
 
 async def cmd_ban(update, ctx):
-    if not admin_dm_required(update) or not ctx.args: return
+    if not admin_dm_required(update): return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/ban UID [reason]</code>\n\n",
+            "Example:\n<code>/ban 123456789 spam</code>")
+        return
     try: uid = int(ctx.args[0])
-    except Exception: return
+    except Exception:
+        await reply_usage(update, "UID must be a number.\n<code>/ban 123456789 reason</code>"); return
     db_ban(uid, " ".join(ctx.args[1:]) or "no reason", update.effective_user.id)
-    await update.message.reply_text(f"🚫 {uid}")
+    await update.message.reply_text(f"🚫 {uid} banned")
 
 async def cmd_unban(update, ctx):
-    if not admin_dm_required(update) or not ctx.args: return
+    if not admin_dm_required(update): return
+    if not ctx.args:
+        await reply_usage(update, "<code>/unban UID</code>\n\nExample:\n<code>/unban 123456789</code>")
+        return
     try: uid = int(ctx.args[0])
-    except Exception: return
+    except Exception:
+        await reply_usage(update, "UID must be a number.\n<code>/unban 123456789</code>"); return
     db_unban(uid)
-    await update.message.reply_text(f"✅ {uid}")
+    await update.message.reply_text(f"✅ {uid} unbanned")
 
 async def cmd_broadcast(update, ctx):
-    if not admin_dm_required(update) or not ctx.args: return
+    if not admin_dm_required(update): return
+    if not ctx.args:
+        await reply_usage(update,
+            "<code>/broadcast MESSAGE</code>\n\n",
+            "Example:\n<code>/broadcast New proxies available!</code>")
+        return
     msg = " ".join(ctx.args); users = db_all_users()
     msg_obj = await update.message.reply_text(f"📢 Sending to {len(users)}...")
     sent = fail = 0
@@ -1862,13 +2036,23 @@ async def cmd_broadcast(update, ctx):
     await _safe_edit(msg_obj, _progress_block("✅ Done", len(users), len(users), extra=[f"✅ {sent}", f"❌ {fail}"]))
 
 async def cmd_bulkcode(update, ctx):
-    if not admin_dm_required(update) or len(ctx.args) < 3: return
+    if not admin_dm_required(update): return
+    if len(ctx.args) < 3:
+        await reply_usage(update,
+            "<code>/bulkcode TIER DAYS COUNT</code>\n\n",
+            "TIER: free | trial | pro | vip\n",
+            "DAYS: 1d, 7d, 30d, 90d, 180d, 365d, life\n",
+            "COUNT: 1-100\n\n",
+            "Example:\n<code>/bulkcode pro 30d 10</code>")
+        return
     tier = ctx.args[0].lower()
-    if tier not in SUB_TIERS: return
+    if tier not in SUB_TIERS:
+        await reply_usage(update, f"TIER must be one of: {', '.join(SUB_TIERS.keys())}"); return
     try:
         days = SUB_DURATIONS.get(ctx.args[1].lower()) or int(ctx.args[1])
         n = min(int(ctx.args[2]), 100)
-    except Exception: return
+    except Exception:
+        await reply_usage(update, "DAYS and COUNT must be valid.\n<code>/bulkcode pro 30d 10</code>"); return
     codes = db_gen_bulk(tier, days, n, update.effective_user.id)
     buf = io.BytesIO("\n".join(codes).encode()); buf.name = f"codes_{tier}_{days}d.txt"; buf.seek(0)
     await update.message.reply_document(document=InputFile(buf, filename=buf.name),
@@ -1888,14 +2072,16 @@ async def cmd_notify(update, ctx):
     for uid, tier, exp in r:
         try: await ctx.bot.send_message(uid, f"⏰ {tier.upper()} expires {exp[:10]}", parse_mode="HTML"); sent += 1
         except Exception: pass
-    await update.message.reply_text(f"🔔 {sent}")
+    await update.message.reply_text(f"🔔 Notified {sent} users (expiring within 3 days)")
 
 async def cmd_setwhitelist(update, ctx):
-    if not admin_dm_required(update) or not ctx.args: return
+    if not admin_dm_required(update): return
+    if not ctx.args or ctx.args[0].lower() not in ("on", "off"):
+        await reply_usage(update, "<code>/setwhitelist on</code> or <code>/setwhitelist off</code>")
+        return
     v = ctx.args[0].lower()
-    if v in ("on", "off"):
-        db_setting_set("whitelist_mode", v)
-        await update.message.reply_text(f"✅ {v.upper()}")
+    db_setting_set("whitelist_mode", v)
+    await update.message.reply_text(f"✅ {v.upper()}")
 
 # ═══════════════════════════════════════════════════════════════════
 # CALLBACKS
@@ -1910,20 +2096,58 @@ async def on_cb(update, ctx):
     if d.startswith("help:"):
         cat = d.split(":")[1]
         texts = {
-            "cards": "🎴 <b>Cards</b>\n\n/gen · /genv · /bin · /check · /info · /checkfile",
-            "proxy": "🕸️ <b>Proxy</b>\n\n/ip · /chkip · /rt · /chkp · /ipm · /pl · /ps\n\nAll results → DM",
-            "clear": "🧹 <b>Cleaner</b> (DM)\n\n/clear",
-            "subs": "🎫 <b>Subs</b>\n\n/sub · /redeem · /ref",
-            "stats": "📊 <b>Stats</b>\n\n/me · /stats · /leaderboard · /fav · /setcountry",
+            "cards": (
+                "🎴 <b>Cards</b>\n\n"
+                "<code>/gen 519468436466760</code>\n"
+                "<code>/gen 519468436466760|50</code>\n"
+                "<code>/gen 519468436466760|02|28</code>\n"
+                "<code>/genv 519468436466760|02|28</code>\n"
+                "<code>/bin 519468</code>\n"
+                "<code>/check 4532015112830366</code>\n"
+                "<code>/info 4532015112830366</code>\n"
+                "<code>/checkfile</code>"
+            ),
+            "proxy": (
+                "🕸️ <b>Proxy</b>\n\n"
+                "<code>/ip</code> — menu\n"
+                "<code>/chkip</code> — scrape 20\n"
+                "<code>/chkip 40</code>\n"
+                "<code>/ipm</code> — file check\n"
+                "<code>/chkp 1.2.3.4:8080</code>\n"
+                "<code>/rt</code> · <code>/pl</code> · <code>/ps</code>"
+            ),
+            "clear": (
+                "🧹 <b>Cleaner</b> (DM)\n\n"
+                "<code>/clear</code>\n\n"
+                "Then upload .txt or .csv"
+            ),
+            "subs": (
+                "🎫 <b>Subs</b>\n\n"
+                "<code>/sub</code>\n"
+                "<code>/redeem CODE</code>\n"
+                "<code>/ref</code>"
+            ),
+            "stats": (
+                "📊 <b>Stats</b>\n\n"
+                "<code>/me</code>\n"
+                "<code>/stats</code>\n"
+                "<code>/leaderboard</code>\n"
+                "<code>/fav</code>\n"
+                "<code>/favadd 519468436466760</code>\n"
+                "<code>/setcountry tr</code>"
+            ),
         }
         await q.edit_message_text(texts.get(cat, "—"), parse_mode="HTML", reply_markup=kb_help()); return
 
     if d == "proxy_menu":
         st = _pstate(u.id); s2 = st["stats"]
         running = "⏳ Running" if st["running"] else "🟢 Idle"
-        txt = (f"🕸️ <b>Proxy Scraper</b>\n\nStatus: {running}\n"
-               f"Cached: {len(st['valid'])}\nCollected: {s2.get('collected', 0)} → Valid: {s2.get('valid', 0)}\n\n"
-               f"🔒 All results go to your DM.")
+        txt = (f"🕸️ <b>Proxy Scraper</b>\n\n"
+               f"Status: {running}\n"
+               f"Cached: {len(st['valid'])}\n"
+               f"Collected: {s2.get('collected', 0)} → Valid: {s2.get('valid', 0)}\n\n"
+               f"🔒 All results go to your DM.\n\n"
+               f"<code>/ip</code> · <code>/chkip</code> · <code>/ipm</code> · <code>/chkp</code>")
         if in_dm(update):
             await q.edit_message_text(txt, parse_mode="HTML", reply_markup=kb_proxy_menu())
         else:
@@ -1943,20 +2167,32 @@ async def on_cb(update, ctx):
             await q.answer("Already running", show_alert=True); return
         state(u.id)["awaiting"] = "mchk_file"
         await q.edit_message_text(
-            "📄 <b>Check From File</b>\n\nSend .txt (one per line)\n<code>1.2.3.4:8080</code>\n\n"
-            f"Max: {MAX_FILE_PROXIES:,}\n\n<i>/cancel to abort</i>",
+            "📄 <b>Check From File</b>\n\n"
+            "📎 Send .txt (one per line)\n"
+            "<code>1.2.3.4:8080</code>\n\n"
+            f"Max: {MAX_FILE_PROXIES:,}\n\n"
+            "<i>/cancel to abort</i>",
             parse_mode="HTML", reply_markup=kb_clear_prompt()); return
     if d == "proxy:howto":
         await q.edit_message_text(
-            "🕸️ <b>How It Works</b>\n\n① Collect (9 sources)\n② Dedup\n③ Test\n④ Confirm\n⑤ Save\n\n"
-            "⏹️ Stop · 🔄 Retest · 📄 File check\n🔒 All in DM only\n\n"
-            "📌 Shortcuts: /ip · /chkip · /ipm · /chkp · /rt · /pl · /ps",
+            "🕸️ <b>How It Works</b>\n\n"
+            "① Collect from 9 sources\n"
+            "② Deduplicate\n"
+            "③ Test each with 4 endpoints\n"
+            "④ Confirm working proxies\n"
+            "⑤ Save to your cache\n\n"
+            "⏹️ Stop anytime · 🔄 Retest later · 📄 File check\n"
+            "🔒 All in DM only\n\n"
+            "📌 Commands:\n"
+            "<code>/ip</code> · <code>/chkip</code> · <code>/ipm</code> · <code>/chkp</code> · <code>/rt</code> · <code>/pl</code> · <code>/ps</code>",
             parse_mode="HTML", reply_markup=kb_proxy_menu()); return
     if d == "proxy:checkone":
         if not in_dm(update):
             await q.answer("DM only", show_alert=True); return
         state(u.id)["awaiting"] = "checkproxy_input"
-        await q.edit_message_text("🔍 Send: <code>1.2.3.4:8080</code>",
+        await q.edit_message_text(
+            "🔍 <b>Check Single Proxy</b>\n\n"
+            "Send:\n<code>1.2.3.4:8080</code>",
             parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Cancel", callback_data="proxy_menu")]])); return
     if d.startswith("proxy:start:"):
@@ -1996,7 +2232,7 @@ async def on_cb(update, ctx):
                 if r and r[0]: valid = [p for p in r[0].split("\n") if p]
             except Exception: pass
         if not valid:
-            await q.answer("No proxies. /chkip first.", show_alert=True); return
+            await q.answer("No proxies. Run /chkip first.", show_alert=True); return
         buf = io.BytesIO("\n".join(valid).encode()); buf.name = f"proxies_{len(valid)}.txt"; buf.seek(0)
         try:
             await ctx.bot.send_document(u.id, document=InputFile(buf, filename=buf.name),
@@ -2007,8 +2243,11 @@ async def on_cb(update, ctx):
     if d == "proxy:stats":
         st = _pstate(u.id); s2 = st["stats"]
         await q.edit_message_text(
-            f"📊 Running: {st['running']}\nCached: {len(st['valid'])}\n"
-            f"Collected: {s2.get('collected', 0)}\nValid: {s2.get('valid', 0)}\nRejected: {s2.get('rejected', 0)}",
+            f"📊 Running: {st['running']}\n"
+            f"Cached: {len(st['valid'])}\n"
+            f"Collected: {s2.get('collected', 0)}\n"
+            f"Valid: {s2.get('valid', 0)}\n"
+            f"Rejected: {s2.get('rejected', 0)}",
             parse_mode="HTML", reply_markup=kb_proxy_menu()); return
     if d.startswith("chk|"):
         proxy_str = d.split("|", 1)[1]
@@ -2022,9 +2261,11 @@ async def on_cb(update, ctx):
                 emoji = "✅" if ok else "❌"
                 lat_txt = f"{lat}ms" if lat is not None else "timeout"
                 results_txt += f"  {emoji} {name}: {lat_txt}\n"
-            text = (f"✅ <b>ALIVE</b>\n\n🌐 <code>{proxy_str}</code>\n"
+            text = (f"✅ <b>ALIVE</b>\n\n"
+                    f"🌐 <code>{proxy_str}</code>\n"
                     f"📊 {result['working']}/{result['total']} · ⚡ {result['latency']}ms\n"
-                    f"📡 {result.get('detected_ip') or '—'}\n\n<b>Endpoints:</b>\n{results_txt}")
+                    f"📡 {result.get('detected_ip') or '—'}\n\n"
+                    f"<b>Endpoints:</b>\n{results_txt}")
             if not any(p == proxy_str for p in _pstate(u.id)["valid"]):
                 _pstate(u.id)["valid"].append(proxy_str)
                 _save_proxy_live(u.id, proxy_str)
@@ -2042,111 +2283,169 @@ async def on_cb(update, ctx):
         if u.id != ADMIN_ID or update.effective_chat.type != "private":
             await q.answer("⛔ Denied", show_alert=True); return
         if d == "adm:back":
-            await q.edit_message_text("🎛️", reply_markup=kb_admin()); return
+            await q.edit_message_text("🎛️ <b>Admin Panel</b>", parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:stats":
             gl, gc = db_stats(None)
-            await q.edit_message_text(f"📊 {gl} req · {gc:,} cards · {len(db_all_users())} users",
-                                        parse_mode="HTML", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                f"📊 <b>Global Stats</b>\n\n"
+                f"Requests: {gl:,}\n"
+                f"Cards: {gc:,}\n"
+                f"Users: {len(db_all_users())}",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:users":
-            users = db_all_users()[:20]; txt = "👥\n\n"
+            users = db_all_users()[:20]; txt = "👥 <b>Users (last 20)</b>\n\n"
             for uid, _ in users:
                 t_, e = db_get_sub(uid); eff = t_ or "free"
                 txt += f"<code>{uid}</code> · {SUB_EMOJI.get(eff,'')} {eff}\n"
             await q.edit_message_text(txt, parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:subs":
             subs = db_list_subs(20)
-            txt = "🎫\n\n" + "\n".join(f"<code>{uid}</code> · {tier} · {exp[:10]}" for uid, tier, exp in subs)
+            txt = "🎫 <b>Subs (last 20)</b>\n\n" + "\n".join(f"<code>{uid}</code> · {tier} · {exp[:10]}" for uid, tier, exp in subs)
             await q.edit_message_text(txt or "None", parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:gencode":
-            await q.edit_message_text("Tier:", reply_markup=kb_admin_tier_for_code()); return
+            await q.edit_message_text("🎟️ <b>Pick a tier</b>", parse_mode="HTML", reply_markup=kb_admin_tier_for_code()); return
         if d.startswith("adm:gen:"):
             tier = d.split(":")[2]
-            await q.edit_message_text(f"<b>{tier}</b>:", parse_mode="HTML", reply_markup=kb_admin_days(tier)); return
+            await q.edit_message_text(f"<b>{tier}</b> — pick duration:", parse_mode="HTML", reply_markup=kb_admin_days(tier)); return
         if d.startswith("adm:genday:"):
             _, _, tier, dur = d.split(":")
             code = db_gen_code(tier, SUB_DURATIONS[dur], u.id)
             if code:
                 await q.edit_message_text(
-                    f"✅ <code>{code}</code>\n{tier} · {SUB_DURATIONS[dur]}d\n\n<code>/redeem {code}</code>",
+                    f"✅ <b>Code generated</b>\n\n"
+                    f"<code>{code}</code>\n\n"
+                    f"{tier} · {SUB_DURATIONS[dur]}d\n\n"
+                    f"Share with the user. They redeem via:\n"
+                    f"<code>/redeem {code}</code>",
                     parse_mode="HTML", reply_markup=kb_admin())
             return
         if d == "adm:listcodes":
             codes = db_list_codes(20)
-            txt = "🎟️\n\n" + "\n".join(f"<code>{c}</code> · {t} · {dd}d · {'✅' if ub else '🟢'}" for c, t, dd, ub in codes)
+            txt = "🎟️ <b>Recent codes</b>\n\n" + "\n".join(f"<code>{c}</code> · {t} · {dd}d · {'✅' if ub else '🟢'}" for c, t, dd, ub in codes)
             await q.edit_message_text(txt or "None", parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:addsub":
-            await q.edit_message_text("<code>/addsub UID TIER DAYS</code>", parse_mode="HTML", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                "➕ <b>Add Sub by ID</b>\n\n"
+                "<code>/addsub UID TIER DAYS</code>\n\n"
+                "Example:\n"
+                "<code>/addsub 123456789 pro 30d</code>",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:bulk":
-            await q.edit_message_text("<code>/bulkcode TIER DAYS COUNT</code>", parse_mode="HTML", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                "📦 <b>Bulk Codes</b>\n\n"
+                "<code>/bulkcode TIER DAYS COUNT</code>\n\n"
+                "Example:\n"
+                "<code>/bulkcode pro 30d 10</code>",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:ban":
-            await q.edit_message_text("<code>/ban UID reason</code>", parse_mode="HTML", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                "🚫 <b>Ban</b>\n\n<code>/ban UID reason</code>\n\nExample:\n<code>/ban 123456789 spam</code>",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:unban":
-            await q.edit_message_text("<code>/unban UID</code>", parse_mode="HTML", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                "✅ <b>Unban</b>\n\n<code>/unban UID</code>\n\nExample:\n<code>/unban 123456789</code>",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:banlist":
             bl = db_ban_list(20)
-            txt = "🚫\n\n" + "\n".join(f"<code>{uid}</code> · {reason}" for uid, reason, _ in bl)
+            txt = "🚫 <b>Ban List</b>\n\n" + "\n".join(f"<code>{uid}</code> · {reason}" for uid, reason, _ in bl)
             await q.edit_message_text(txt or "None", parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:whitelist":
             wl = db_setting_get("whitelist_mode", "off")
-            await q.edit_message_text(f"⚙️ {wl.upper()}", parse_mode="HTML", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                f"⚙️ <b>Whitelist mode</b>: {wl.upper()}\n\n"
+                f"Toggle with:\n<code>/setwhitelist on</code>\n<code>/setwhitelist off</code>",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:bc":
-            await q.edit_message_text("<code>/broadcast msg</code>", reply_markup=kb_admin()); return
+            await q.edit_message_text(
+                "📢 <b>Broadcast</b>\n\n<code>/broadcast MESSAGE</code>\n\nExample:\n<code>/broadcast Maintenance in 5min</code>",
+                parse_mode="HTML", reply_markup=kb_admin()); return
         if d == "adm:notify":
             await cmd_notify(update, ctx); return
         return
 
     if d == "noop": return
-    if d == "bk": await q.edit_message_text("Menu", reply_markup=kb_main()); return
-    if d == "g": await q.edit_message_text("<code>/gen BIN</code>", parse_mode="HTML"); return
-    if d == "b": await q.edit_message_text("<code>/bin BIN</code>", parse_mode="HTML"); return
-    if d == "cd": await q.edit_message_text("<code>/check CARD</code>", parse_mode="HTML"); return
+    if d == "bk":
+        await q.edit_message_text("📖 <b>Main Menu</b>", parse_mode="HTML", reply_markup=kb_main()); return
+    if d == "g":
+        await q.edit_message_text(
+            "🎴 <b>Generate Cards</b>\n\n"
+            "Formats:\n"
+            "<code>/gen 519468436466760</code>\n"
+            "<code>/gen 519468436466760|50</code>\n"
+            "<code>/gen 519468436466760|02|28</code>\n\n"
+            "Tap any to copy.",
+            parse_mode="HTML"); return
+    if d == "b":
+        await q.edit_message_text(
+            "🔍 <b>BIN Lookup</b>\n\n"
+            "Send:\n<code>/bin 519468</code>",
+            parse_mode="HTML"); return
+    if d == "cd":
+        await q.edit_message_text(
+            "📋 <b>Check Card</b>\n\n"
+            "Send:\n<code>/check 4532015112830366</code>",
+            parse_mode="HTML"); return
     if d == "m:help":
-        await q.edit_message_text("📖 Categories", parse_mode="HTML", reply_markup=kb_help()); return
+        await q.edit_message_text("📖 <b>Help categories</b>", parse_mode="HTML", reply_markup=kb_help()); return
     if d == "m:sub":
         tier = get_effective_tier(u.id); _, exp = db_get_sub(u.id)
-        await q.edit_message_text(f"🎫 {tier.upper()}\n{exp[:10] if exp else '—'}\n{SUB_TIERS[tier]['rate']}/hr",
-                                    parse_mode="HTML", reply_markup=kb_back()); return
+        await q.edit_message_text(
+            f"🎫 <b>Your Sub</b>\n\n"
+            f"Tier: {tier.upper()}\n"
+            f"Expires: {exp[:10] if exp else '—'}\n"
+            f"Rate: {SUB_TIERS[tier]['rate']}/hr",
+            parse_mode="HTML", reply_markup=kb_back()); return
     if d == "m:redeem":
-        await q.edit_message_text("<code>/redeem CODE</code>", parse_mode="HTML"); return
+        await q.edit_message_text(
+            "🎟️ <b>Redeem</b>\n\nSend:\n<code>/redeem CODE</code>",
+            parse_mode="HTML"); return
     if d == "m:ref":
         link = f"https://t.me/{BOT_USERNAME or 'bot'}?start=ref_{u.id}"
-        await q.edit_message_text(f"🎁 <code>{link}</code>\n\nInvites: {db_referral_count(u.id)}",
-                                    parse_mode="HTML", reply_markup=kb_back()); return
+        await q.edit_message_text(
+            f"🎁 <b>Your Referral Link</b>\n\n<code>{link}</code>\n\nInvites: {db_referral_count(u.id)}",
+            parse_mode="HTML", reply_markup=kb_back()); return
     if d == "m:lead":
-        top = db_top_users(10); txt = "🏆\n\n"
+        top = db_top_users(10); txt = "🏆 <b>Top 10</b>\n\n"
         for i, (uid, un, cnt, _) in enumerate(top, 1):
-            txt += f"{i}. <code>{uid}</code> · {cnt}\n"
+            medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
+            txt += f"{medal} <code>{uid}</code> · {cnt}\n"
         await q.edit_message_text(txt, parse_mode="HTML", reply_markup=kb_back()); return
     if d == "m:clear":
         if not in_dm(update): await q.answer("DM only", show_alert=True); return
         state(u.id)["awaiting"] = "clear_file"
-        await q.edit_message_text("🧹 Send file\n\n<i>/cancel</i>", parse_mode="HTML", reply_markup=kb_clear_prompt()); return
+        await q.edit_message_text(
+            "🧹 <b>File Cleaner</b>\n\nUpload .txt or .csv\n<i>/cancel to abort</i>",
+            parse_mode="HTML", reply_markup=kb_clear_prompt()); return
     if d == "fav":
         rows = db_fav_list(u.id)
-        if not rows: await q.edit_message_text("None", reply_markup=kb_back()); return
+        if not rows:
+            await q.edit_message_text(
+                "⭐ <b>No favorites</b>\n\nAdd one:\n<code>/favadd 519468436466760</code>",
+                parse_mode="HTML", reply_markup=kb_back()); return
         btns = [[InlineKeyboardButton(r[0], callback_data=f"g|{r[0]}")] for r in rows]
         btns.append([InlineKeyboardButton("⬅️", callback_data="bk")])
-        await q.edit_message_text("⭐", reply_markup=InlineKeyboardMarkup(btns)); return
+        await q.edit_message_text("⭐ <b>Favorites</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(btns)); return
     if d == "st":
         total, cards = db_stats(u.id)
-        await q.edit_message_text(f"📊 {total} · {cards:,}", reply_markup=kb_back()); return
+        await q.edit_message_text(f"📊 {total} requests · {cards:,} cards", reply_markup=kb_back()); return
     if d.startswith("cp|"):
         await q.answer(f"{d.split('|',1)[1]}", show_alert=True); return
     if d.startswith("ca|"):
         block = "\n".join(s.get("last_lines") or [])
         if block:
             try: await q.message.reply_text(f"<code>{block}</code>", parse_mode="HTML")
-            except Exception: await q.answer("Use TXT", show_alert=True)
+            except Exception: await q.answer("Use TXT export instead", show_alert=True)
+        else:
+            await q.answer("No cards to copy — generate first", show_alert=True)
         return
     if d.startswith("rg|"):
-        if not in_group(update):
-            await q.answer("Regenerate in group only", show_alert=True); return
         parts = d.split("|")
         await do_gen(update, ctx, [parts[1]], int(parts[2]), None, None); return
     if d.startswith("x|"):
         parts = d.split("|"); fmt = parts[1]; bp = parts[2]
         lines = s.get("last_lines") or []
-        if not lines: return
+        if not lines:
+            await q.answer("No cards to export — generate first", show_alert=True); return
         if fmt == "txt": buf = build_txt(lines, bp, s.get("last_brand",""), s.get("last_length",16), s.get("last_expiry"))
         elif fmt == "csv": buf = build_csv(lines)
         elif fmt == "json": buf = build_json(lines)
@@ -2168,21 +2467,22 @@ async def on_text(update, ctx):
 
     if awaiting == "clear_file":
         if not in_dm(update): return
-        await update.message.reply_text("📎 Upload file", parse_mode="HTML"); return
+        await update.message.reply_text("📎 Upload the file (not text).", parse_mode="HTML"); return
 
     if awaiting == "mchk_file":
         if not in_dm(update): return
-        await update.message.reply_text("📎 Upload .txt file, not text.", parse_mode="HTML"); return
+        await update.message.reply_text("📎 Upload a .txt file, not text.", parse_mode="HTML"); return
 
     if awaiting == "checkproxy_input":
         s["awaiting"] = None
         txt = (update.message.text or "").strip()
         m = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[:\s]+(\d{1,5})', txt)
         if not m:
-            await update.message.reply_text("❌ Use: <code>1.2.3.4:8080</code>", parse_mode="HTML"); return
+            await reply_usage(update, "Send: <code>1.2.3.4:8080</code>"); return
         ip, port = m.group(1), m.group(2)
         if not _p_ip_ok(ip) or not (1 <= int(port) <= 65535):
-            await update.message.reply_text("❌ Invalid", parse_mode="HTML"); return
+            await update.message.reply_text("❌ Invalid IP/port.\nFormat: <code>1.2.3.4:8080</code>",
+                                              parse_mode="HTML"); return
         proxy_str = f"{ip}:{port}"
         msg = await update.message.reply_text(f"🔍 Testing: <code>{proxy_str}</code>", parse_mode="HTML")
         result = await asyncio.get_event_loop().run_in_executor(POOL, _p_test_detailed, proxy_str)
@@ -2213,7 +2513,8 @@ async def on_text(update, ctx):
             okv, vinfo = validate_bin(r["bin_prefix"])
             if okv:
                 await update.message.reply_text(
-                    f"✅ BIN valid\n<code>/gen {d}|5</code>\n<code>/genv {d}|02|28</code>",
+                    f"✅ BIN valid\n"
+                    f"Try:\n<code>/gen {d}|5</code>\n<code>/genv {d}|02|28</code>",
                     parse_mode="HTML")
             else:
                 await update.message.reply_text(f"❌ {vinfo}", parse_mode="HTML")
@@ -2256,7 +2557,10 @@ async def on_document(update, ctx):
         content = raw.decode("utf-8", errors="ignore")
     except Exception: return
     lines = [l.strip() for l in content.splitlines() if l.strip() and not l.startswith("#")]
-    if not lines or len(lines) > 10000: return
+    if not lines:
+        await update.message.reply_text("❌ File is empty."); return
+    if len(lines) > 10000:
+        await update.message.reply_text("❌ Max 10,000 lines."); return
     progress_msg = await update.message.reply_text(
         _progress_block("📊 Analyzing...", 0, len(lines)), parse_mode="HTML")
     total = len(lines); ok_n = fail_n = 0; brands = {}
@@ -2311,10 +2615,11 @@ def main():
         ("proxy", cmd_proxy), ("scrape", cmd_scrape), ("retest", cmd_retest),
         ("checkproxy", cmd_checkproxy), ("proxylist", cmd_proxylist),
         ("proxystats", cmd_proxystats), ("mcheckproxy", cmd_mcheckproxy),
+        # old short
         ("px", cmd_proxy), ("sc", cmd_scrape), ("rt", cmd_retest),
         ("chkp", cmd_checkproxy), ("pl", cmd_proxylist),
         ("ps", cmd_proxystats), ("mchk", cmd_mcheckproxy),
-        # ── new short names ──
+        # new short
         ("ip", cmd_proxy), ("ipm", cmd_mcheckproxy), ("chkip", cmd_scrape),
     ]:
         app.add_handler(CommandHandler(cmd, fn))
