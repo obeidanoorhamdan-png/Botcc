@@ -50,6 +50,13 @@ PORT = int(os.getenv("PORT", "8080"))
 POOL = ThreadPoolExecutor(max_workers=32)
 
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+
+# ── Silence noisy libraries (getUpdates spam, http request spam) ──
+for _noisy in ("httpx", "httpcore", "telegram", "telegram.ext",
+               "werkzeug", "urllib3", "urllib3.connectionpool",
+               "asyncio", "apscheduler"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 log = logging.getLogger("luuln")
 
 BOT_USERNAME = None
@@ -74,14 +81,37 @@ ALL_USERS = set()
 health_app = Flask(__name__)
 
 @health_app.route("/")
+def _index():
+    """Visible landing page — proves the bot is online."""
+    bot = BOT_USERNAME or "starting"
+    now = datetime.utcnow().isoformat() + "Z"
+    html = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Luuln Bot</title></head>"
+        "<body style='font-family:system-ui,sans-serif;background:#0d1117;"
+        "color:#c9d1d9;display:flex;align-items:center;justify-content:center;"
+        "min-height:100vh;margin:0'><div style='text-align:center;padding:24px'>"
+        "<h1 style='color:#58a6ff;margin:0 0 16px'>✅ Luuln Bot is Online</h1>"
+        f"<p style='margin:6px 0'>Bot: <code>@{bot}</code></p>"
+        f"<p style='margin:6px 0'>Time: <code>{now}</code></p>"
+        "<p style='color:#3fb950;font-weight:bold;margin-top:16px'>Status: running</p>"
+        "<p style='color:#8b949e;margin-top:24px;font-size:13px'>"
+        "Ping endpoint: <code>/ping</code> · Health JSON: <code>/health</code></p>"
+        "</div></body></html>"
+    )
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
 @health_app.route("/health")
 def _health():
     return jsonify({"status": "ok", "bot": BOT_USERNAME or "starting",
                     "time": datetime.utcnow().isoformat() + "Z"}), 200
 
 @health_app.route("/ping")
+@health_app.route("/cron")
 def _ping():
-    return "pong", 200
+    """Minimal 200 for cron-job.org / uptime pings."""
+    return "ok", 200
 
 def _run_health():
     log.info(f"🌐 Health server on :{PORT}")
@@ -91,18 +121,15 @@ def _run_health():
 # PRIVACY HELPERS
 # ═══════════════════════════════════════════════════════════════════
 def mask_card_full(card):
-    """Full mask: ████ ████ ████ ████"""
     if not card: return "████ ████ ████ ████"
     groups = (len(card) + 3) // 4
     return " ".join(["█" * 4] * groups)
 
 def mask_card_partial(card):
-    """Partial: 4532 **** **** 9103"""
     if len(card) <= 8: return "█" * len(card)
     return card[:4] + " " + "*" * (len(card) - 8) + " " + card[-4:]
 
 def mask_proxy_partial(proxy_str):
-    """Partial: 103.**.**.170:8██"""
     try:
         ip, port = proxy_str.rsplit(":", 1)
         parts = ip.split(".")
@@ -114,12 +141,10 @@ def mask_proxy_partial(proxy_str):
     return "█" * min(len(proxy_str), 20)
 
 def mask_bin(bp):
-    """Mask BIN: ••••••"""
     if not bp: return "••••••"
     return "•" * len(bp)
 
 async def auto_delete_message(msg, delay=None):
-    """Auto-delete a message after delay"""
     if delay is None:
         delay = GROUP_NOTICE_TTL
     await asyncio.sleep(delay)
@@ -129,13 +154,11 @@ async def auto_delete_message(msg, delay=None):
         pass
 
 def _user_label(user):
-    """Safe username label"""
     if user.username:
         return f"@{user.username}"
     return user.first_name or "User"
 
 async def send_group_notice(update, ctx, title, lines, extra_buttons=None):
-    """Send a masked notice to group with auto-delete + Open DM button"""
     if not in_group(update):
         return None
     user = update.effective_user
@@ -749,7 +772,7 @@ async def _do_retest(ctx, uid, msg_obj, workers=20):
             if r and r[0]: existing = [p for p in r[0].split("\n") if p]
         except Exception: pass
     if not existing:
-        await _safe_edit(msg_obj, "❌ <b>No saved proxies</b>\n\nRun /sc first.",
+        await _safe_edit(msg_obj, "❌ <b>No saved proxies</b>\n\nRun /chkip first.",
                            reply_markup=kb_proxy_menu())
         st["running"] = False; st["retesting"] = False; return
     total = len(existing)
@@ -1252,7 +1275,6 @@ async def do_gen(update, ctx, bins, count, expiry, fixed_cvv, partial=None, inpu
     s["last_expiry"] = expiry
     db_log(u.id, u.username, main_bp, len(lines), "gen")
 
-    # ── SEND TO DM (full) ──
     h = (f"┌─ <b>L U U L N</b> ─┐\n│ BIN: <code>{main_bp}</code>\n│ Brand: {brand_first or '—'}\n"
          f"│ Length: {real_len}\n│ Count: {len(lines):,}\n└────────────────────┘")
     dm_ok = True
@@ -1272,7 +1294,6 @@ async def do_gen(update, ctx, bins, count, expiry, fixed_cvv, partial=None, inpu
     except Exception:
         dm_ok = False
 
-    # ── GROUP NOTICE (masked) or DM fallback ──
     if from_group:
         if dm_ok:
             await send_group_notice(update, ctx, "🎴 GENERATION COMPLETE", [
@@ -1313,7 +1334,7 @@ async def cmd_start(update, ctx):
     if in_dm(update) or not in_group(update):
         await update.message.reply_text(
             f"👋 Welcome <b>{u.first_name}</b>\n\n"
-            f"📖 /help — all commands\n🕸️ /px — proxy menu\n🎴 /gen BIN — generate",
+            f"📖 /help — all commands\n🕸️ /ip — proxy menu\n🎴 /gen BIN — generate",
             parse_mode="HTML", reply_markup=kb_main()); return
     await update.message.reply_text(
         f"👋 Welcome <b>{u.first_name}</b>\n\nUse /help:", parse_mode="HTML", reply_markup=kb_main())
@@ -1333,10 +1354,10 @@ async def cmd_help(update, ctx):
         "<code>/bin BIN</code> · <code>/check CARD</code>\n"
         "<code>/info CARD</code> · <code>/checkfile</code>\n\n"
         "🕸️ <b>PROXY — SHORT</b>\n"
-        "<code>/px</code> — menu · <code>/sc</code> — scrape 20\n"
-        "<code>/sc 40</code> / <code>/sc 10</code>\n"
-        "<code>/rt</code> — retest · <code>/chkp IP:PORT</code>\n"
-        "<code>/mchk</code> — check from file\n"
+        "<code>/ip</code> — menu · <code>/chkip</code> — scrape 20\n"
+        "<code>/chkip 40</code> / <code>/chkip 10</code>\n"
+        "<code>/rt</code> — retest · <code>/chkp IP:PORT</code> — single\n"
+        "<code>/ipm</code> — check from file\n"
         "<code>/pl</code> — download · <code>/ps</code> — stats\n\n"
         "🧹 <b>CLEANER</b> (DM): <code>/clear</code>\n\n"
         "🎫 <b>SUBS:</b> <code>/sub</code> · <code>/redeem CODE</code> · <code>/ref</code>\n\n"
@@ -1616,7 +1637,13 @@ async def cmd_proxy(update, ctx):
         f"🕸️ <b>Proxy Scraper</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"<b>Status:</b> {running}\n<b>Cached:</b> <code>{len(st['valid'])}</code>\n"
         f"<b>Collected:</b> <code>{s.get('collected', 0)}</code> → <b>{s.get('valid', 0)}</b> valid\n\n"
-        f"<b>Short:</b> /px · /sc · /rt · /chkp · /mchk · /pl · /ps\n\n"
+        f"<b>Commands:</b>\n"
+        f"/ip — this menu\n"
+        f"/chkip [N] — scrape proxies\n"
+        f"/ipm — check from file\n"
+        f"/chkp IP:PORT — single check\n"
+        f"/rt — retest saved\n"
+        f"/pl — download · /ps — stats\n\n"
         f"🔒 All results go to your DM."
     )
     if in_dm(update):
@@ -1759,7 +1786,7 @@ async def cmd_proxylist(update, ctx):
             if r and r[0]: valid = [p for p in r[0].split("\n") if p]
         except Exception: pass
     if not valid:
-        await update.message.reply_text("No proxies. /sc first.", reply_markup=kb_proxy_menu()); return
+        await update.message.reply_text("No proxies. /chkip first.", reply_markup=kb_proxy_menu()); return
     buf = io.BytesIO("\n".join(valid).encode()); buf.name = f"proxies_{len(valid)}.txt"; buf.seek(0)
     try:
         await ctx.bot.send_document(u.id, document=InputFile(buf, filename=buf.name),
@@ -1884,7 +1911,7 @@ async def on_cb(update, ctx):
         cat = d.split(":")[1]
         texts = {
             "cards": "🎴 <b>Cards</b>\n\n/gen · /genv · /bin · /check · /info · /checkfile",
-            "proxy": "🕸️ <b>Proxy</b>\n\n/px · /sc · /rt · /chkp · /mchk · /pl · /ps\n\nAll results → DM",
+            "proxy": "🕸️ <b>Proxy</b>\n\n/ip · /chkip · /rt · /chkp · /ipm · /pl · /ps\n\nAll results → DM",
             "clear": "🧹 <b>Cleaner</b> (DM)\n\n/clear",
             "subs": "🎫 <b>Subs</b>\n\n/sub · /redeem · /ref",
             "stats": "📊 <b>Stats</b>\n\n/me · /stats · /leaderboard · /fav · /setcountry",
@@ -1922,7 +1949,8 @@ async def on_cb(update, ctx):
     if d == "proxy:howto":
         await q.edit_message_text(
             "🕸️ <b>How It Works</b>\n\n① Collect (9 sources)\n② Dedup\n③ Test\n④ Confirm\n⑤ Save\n\n"
-            "⏹️ Stop · 🔄 Retest · 📄 File check\n🔒 All in DM only",
+            "⏹️ Stop · 🔄 Retest · 📄 File check\n🔒 All in DM only\n\n"
+            "📌 Shortcuts: /ip · /chkip · /ipm · /chkp · /rt · /pl · /ps",
             parse_mode="HTML", reply_markup=kb_proxy_menu()); return
     if d == "proxy:checkone":
         if not in_dm(update):
@@ -1968,7 +1996,7 @@ async def on_cb(update, ctx):
                 if r and r[0]: valid = [p for p in r[0].split("\n") if p]
             except Exception: pass
         if not valid:
-            await q.answer("No proxies. /sc first.", show_alert=True); return
+            await q.answer("No proxies. /chkip first.", show_alert=True); return
         buf = io.BytesIO("\n".join(valid).encode()); buf.name = f"proxies_{len(valid)}.txt"; buf.seek(0)
         try:
             await ctx.bot.send_document(u.id, document=InputFile(buf, filename=buf.name),
@@ -2286,6 +2314,8 @@ def main():
         ("px", cmd_proxy), ("sc", cmd_scrape), ("rt", cmd_retest),
         ("chkp", cmd_checkproxy), ("pl", cmd_proxylist),
         ("ps", cmd_proxystats), ("mchk", cmd_mcheckproxy),
+        # ── new short names ──
+        ("ip", cmd_proxy), ("ipm", cmd_mcheckproxy), ("chkip", cmd_scrape),
     ]:
         app.add_handler(CommandHandler(cmd, fn))
 
