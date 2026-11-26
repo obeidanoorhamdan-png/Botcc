@@ -57,12 +57,13 @@ CONFIG = {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# ═══ ONE-LINE COMMANDS (edit names here) ═══
+# ═══ ONE-LINE COMMANDS ═══
 # ═══════════════════════════════════════════════════════════════════
 COMMAND_MAP = {
-    # cmd_name: handler_name
     "start":       "start",
     "help":        "help",
+    "menu":        "menu",
+    "ping":        "ping",
     "gen":         "gen",
     "genv":        "genv",
     "bin":         "bin",
@@ -342,7 +343,9 @@ def check_rate(uid):
     now = time.time()
     RATE.setdefault(uid, [])
     RATE[uid] = [t for t in RATE[uid] if now - t < 3600]
-    if len(RATE[uid]) >= cfg["rate"]: return False, 0, tier, cfg["max"]
+    if len(RATE[uid]) >= cfg["rate"]:
+        wait = int(min(RATE[uid]) + 3600 - now)
+        return False, max(1, wait), tier, cfg["max"]
     RATE[uid].append(now)
     return True, cfg["rate"] - len(RATE[uid]), tier, cfg["max"]
 
@@ -474,6 +477,47 @@ async def lookup_bin(bp):
                "prepaid": d.get("prepaid"), "source": "binlist.net"}
         BIN_CACHE[k] = out; return out
     BIN_CACHE[k] = None; return None
+
+def fmt_bin_block(bp, vinfo, info, card=None):
+    brand = vinfo.get("brand") or "—"
+    lengths = vinfo.get("lengths") or []
+    default_len = vinfo.get("default_length") or 16
+    lengths_str = ", ".join(map(str, lengths)) if lengths else "—"
+
+    L = []
+    if card:
+        L.append(f"<b>Card</b>     <code>{card}</code>")
+        L.append(f"<b>Luhn</b>     {'✅ valid' if luhn_check(card) else '❌ invalid'}")
+        L.append(f"<b>BIN</b>      <code>{bp}</code>")
+    else:
+        L.append(f"<b>BIN</b>      <code>{bp}</code>")
+    L.append(f"<b>Brand</b>    {brand}")
+    L.append(f"<b>Lengths</b>  {lengths_str}")
+    L.append(f"<b>Default</b>  {default_len}")
+
+    if not info or info.get("error"):
+        L.append("")
+        L.append("<i>⚠️ Lookup rate limited — offline data only.</i>"
+                 if info and info.get("error") == "rate_limit"
+                 else "<i>⚠️ Lookup unavailable — offline data only.</i>")
+        return "\n".join(L)
+
+    prepaid = info.get("prepaid")
+    badge = "✅ Yes" if prepaid is True else ("❌ No" if prepaid is False else "—")
+    L += ["", f"<b>Scheme</b>   {info.get('scheme') or '—'}",
+              f"<b>Type</b>     {info.get('type') or '—'}",
+              f"<b>Prepaid</b>  {badge}"]
+
+    cc_part = f" · <code>{info['country_code']}</code>" if info.get("country_code") else ""
+    L += ["", f"<b>Country</b>  {info.get('emoji','')} {info.get('country','—')}{cc_part}",
+              f"<b>Currency</b> {info.get('currency') or '—'}"]
+
+    L += ["", f"<b>Bank</b>     {info.get('bank') or '—'}"]
+    for label, key in (("City", "bank_city"), ("Phone", "bank_phone"), ("URL", "bank_url")):
+        v = info.get(key) or ""
+        if v and v != "—":
+            L.append(f"<b>{label}</b>     <code>{v}</code>" if key == "bank_phone" else f"<b>{label}</b>     {v}")
+    return "\n".join(L)
 
 # ═══════════════════════════════════════════════════════════════════
 # IDENTITY
@@ -854,7 +898,7 @@ def kb_dm_only():
 
 def kb_clear_prompt():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cancel", callback_data="bk")]])
-
+   
 # ═══════════════════════════════════════════════════════════════════
 # PARSE GEN
 # ═══════════════════════════════════════════════════════════════════
@@ -995,6 +1039,7 @@ async def do_gen(update, ctx, bins, count, expiry, fixed_cvv, partial=None, inpu
         await send_group_notice(update, ctx, "🎴 GENERATION", [
             f"🔢 BIN: {mask_bin(main_bp)}", f"💳 Brand: {brand_first or '—'}",
             f"📦 Cards: {len(lines):,}", f"💳 {mask_card_full(lines[0].split('|')[0])}"])
+
 # ═══════════════════════════════════════════════════════════════════
 # PUBLIC COMMANDS
 # ═══════════════════════════════════════════════════════════════════
@@ -1025,6 +1070,22 @@ async def cmd_start(update, ctx):
         f"/setcountry · /clear · /ip · /chkip · /rt · /chkp · /ipm · /ipl · /ips\n\n"
         f"🔒 Results → DM · Group masked", parse_mode="HTML", reply_markup=kb_main())
 
+async def cmd_menu(update, ctx):
+    await update.message.reply_text("📖 <b>Luuln Menu</b>\n\nPick a section:",
+                                    parse_mode="HTML", reply_markup=kb_main())
+
+async def cmd_ping(update, ctx):
+    t0 = time.time()
+    msg = await update.message.reply_text("🏓 Pinging...")
+    ms = int((time.time() - t0) * 1000)
+    tier = get_effective_tier(update.effective_user.id)
+    await msg.edit_text(
+        f"🏓 <b>Pong!</b>\n\n"
+        f"⚡ Latency: <code>{ms}ms</code>\n"
+        f"👤 Tier: {SUB_EMOJI.get(tier,'')} <b>{tier.upper()}</b>\n"
+        f"🕐 {datetime.utcnow().strftime('%H:%M:%S')} UTC",
+        parse_mode="HTML")
+
 async def cmd_help(update, ctx):
     text = (
         "📖 <b>Luuln Bot — Help</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1048,7 +1109,8 @@ async def cmd_help(update, ctx):
         "🧹 <code>/clear</code> — file cleaner (DM)\n\n"
         "🎫 <code>/sub</code> · <code>/redeem CODE</code> · <code>/ref</code>\n\n"
         "📊 <code>/stats</code> · <code>/me</code> · <code>/board</code>\n\n"
-        "👑 <code>/admin</code> (admin only)"
+        "👑 <code>/admin</code> (admin only)\n"
+        "🏓 <code>/ping</code> — latency"
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb_help())
 
@@ -1154,14 +1216,21 @@ async def cmd_gen(update, ctx):
             parse_mode="HTML"); return
     ok, rem, tier, max_cards = check_rate(u.id)
     if not ok:
+        mins, secs = rem // 60, rem % 60
         await update.message.reply_text(
-            f"⚠️ Rate limit ({tier}): {SUB_TIERS[tier]['rate']}/hr\n\nUpgrade: <code>/redeem CODE</code>",
-            parse_mode="HTML"); return
+            f"⚠️ <b>Rate limit — {tier.upper()}</b>\n\n"
+            f"Limit: <code>{SUB_TIERS[tier]['rate']}/hr</code>\n"
+            f"Try again in <b>{mins}m {secs}s</b>\n\n"
+            f"Upgrade: <code>/redeem CODE</code>", parse_mode="HTML"); return
     p = parse_gen(" ".join(ctx.args), max_cards)
     if not p:
         await update.message.reply_text(
             "❌ Parse error\n\nFormat: <code>/gen BIN[|MM|YY][|COUNT]</code>\nExample: <code>/gen 519468436466760|5</code>",
             parse_mode="HTML"); return
+    if p["count"] >= max_cards and max_cards < 10000:
+        await update.message.reply_text(
+            f"ℹ️ Generating <b>{p['count']:,}</b> — max for <b>{tier.upper()}</b> tier.\n\n"
+            f"Upgrade: <code>/redeem CODE</code>", parse_mode="HTML")
     await do_gen(update, ctx, **p)
 
 async def cmd_genv(update, ctx):
@@ -1171,11 +1240,12 @@ async def cmd_genv(update, ctx):
     if not ctx.args:
         await update.message.reply_text(
             "🎴 <b>Generate CVVs</b>\n\n<code>/genv BIN|MM|YY [COUNT]</code>\n\n"
-            "Example:\n<code>/genv 519468436466760|02|28</code>",
-            parse_mode="HTML"); return
+            "Example:\n<code>/genv 519468436466760|02|28</code>", parse_mode="HTML"); return
     ok, rem, tier, max_cards = check_rate(u.id)
     if not ok:
-        await update.message.reply_text(f"⚠️ Rate limit ({tier}): {SUB_TIERS[tier]['rate']}/hr", parse_mode="HTML"); return
+        mins, secs = rem // 60, rem % 60
+        await update.message.reply_text(
+            f"⚠️ Rate limit — {tier.upper()}\n\nTry again in <b>{mins}m {secs}s</b>", parse_mode="HTML"); return
     parts = [p for p in re.split(r"\s+", " ".join(ctx.args).replace("|"," | ")) if p and p != "|"]
     if not parts:
         await update.message.reply_text("❌ Usage: <code>/genv BIN|MM|YY</code>", parse_mode="HTML"); return
@@ -1223,10 +1293,8 @@ async def cmd_bin(update, ctx):
     bp = r["bin_prefix"]; okv, vinfo = validate_bin(bp)
     if not okv:
         await update.message.reply_text(f"❌ {vinfo}"); return
-    info = await lookup_bin(bp); brand = vinfo["brand"]
-    txt = f"🔍 <b>BIN</b>\n<code>{bp}</code>\nBrand: {brand}\nLengths: {', '.join(map(str,vinfo['lengths']))}\n"
-    if info and not info.get("error"):
-        txt += f"\nScheme: {info['scheme']}\nType: {info['type']}\nBank: {info['bank']}\nCountry: {info['emoji']} {info['country']}"
+    info = await lookup_bin(bp)
+    txt = f"🔍 <b>BIN Details</b>\n━━━━━━━━━━━━━━━━━━━\n\n{fmt_bin_block(bp, vinfo, info)}"
     ok = await send_dm(ctx, u.id, text=txt, reply_markup=kb_back())
     if ok and in_group(update): await send_group_notice(update, ctx, "🔍 BIN", [f"🔢 {mask_bin(bp)}"])
     elif in_group(update): await update.message.reply_text("📩 Open DM", reply_markup=kb_dm_only())
@@ -1258,13 +1326,18 @@ async def cmd_info(update, ctx):
     d = re.sub(r"\D","", "".join(parts))
     if not d or len(d) < 4:
         await update.message.reply_text("❌ Need 4+ digits"); return
-    brand, lens, dl = detect_brand(d[:8])
+    bp = d[:8]; brand, lens, dl = detect_brand(bp)
     if brand == "UNKNOWN":
         await update.message.reply_text("❌ Unknown BIN"); return
     if len(d) <= 8: card = gen_from_bin(d, dl)
     elif len(d) < 16: card = complete_partial(d, dl)
     else: card = d[:-1] + str(luhn_digit(d[:-1]))
-    cc, _ = await resolve_country(d[:8], param, state(u.id).get("default_country"))
+
+    vinfo = {"brand": brand, "lengths": lens, "default_length": dl}
+    bin_info = await lookup_bin(bp)
+    bin_block = fmt_bin_block(bp, vinfo, bin_info, card=card)
+
+    cc, _ = await resolve_country(bp, param, state(u.id).get("default_country"))
     if not cc:
         await update.message.reply_text(f"⚠️ Country unknown. <code>/info {d}|tr</code>", parse_mode="HTML"); return
     ident = await fetch_identity(cc)
@@ -1272,16 +1345,20 @@ async def cmd_info(update, ctx):
         await update.message.reply_text(f"⚠️ No identity {cc}"); return
     pi = await postal_check(cc, ident["postal"]); ci = await country_info(cc)
     state(u.id)["last_card"] = card; state(u.id)["last_identity"] = ident; state(u.id)["last_brand"] = brand
-    txt = (f"👤 <b>Card Data</b>\n\n💳 <code>{card}</code>\n\n"
+
+    country_line = f"🌍 <code>{ci['flag']} {ci['name']}</code>" if ci else f"🌍 <code>{ident['country']}</code>"
+    txt = (f"👤 <b>Card Info</b>\n━━━━━━━━━━━━━━━━━━━\n\n{bin_block}\n\n"
+           f"━━━━━━━━━━━━━━━━━━━\n🪪 <b>Identity</b>\n\n"
            f"👤 <code>{ident['name']}</code>\n📞 <code>{ident['phone']}</code>\n"
-           f"📧 <code>{ident.get('email','—')}</code>\n🎂 <code>{ident.get('dob','—')}</code> ({ident.get('age','—')})\n"
+           f"📧 <code>{ident.get('email','—')}</code>\n"
+           f"🎂 <code>{ident.get('dob','—')}</code> ({ident.get('age','—')})\n"
            f"🏠 <code>{ident['street']}</code>\n🏙 <code>{ident['city']}</code>\n"
-           f"📮 <code>{ident['postal']}</code>\n🌍 <code>{ident['country']}</code>\n"
+           f"📮 <code>{ident['postal']}</code>\n{country_line}\n"
            f"📍 <code>{ident.get('lat','—')}, {ident.get('lng','—')}</code>")
     if pi: txt += f"\n\n📬 <code>{pi['city']}, {pi['state']} ({pi['state_ab']})</code>"
     if ci: txt += f"\n\n🌐 {ci['flag']} <b>{ci['name']}</b>\n🏛 <code>{ci['capital']}</code> · 💰 <code>{ci['currency']}</code>"
     ok = await send_dm(ctx, u.id, text=txt, reply_markup=kb_identity())
-    if ok and in_group(update): await send_group_notice(update, ctx, "👤 IDENTITY", [f"💳 {mask_card_partial(card)}"])
+    if ok and in_group(update): await send_group_notice(update, ctx, "👤 CARD", [f"💳 {mask_card_partial(card)}"])
     elif in_group(update): await update.message.reply_text("📩 Open DM", reply_markup=kb_dm_only())
 
 async def cmd_checkfile(update, ctx):
@@ -1994,7 +2071,8 @@ async def cmd_cmds(update, ctx):
 # DISPATCHERS
 # ═══════════════════════════════════════════════════════════════════
 HANDLERS = {
-    "start": cmd_start, "help": cmd_help, "me": cmd_me, "sub": cmd_sub,
+    "start": cmd_start, "menu": cmd_menu, "ping": cmd_ping,
+    "help": cmd_help, "me": cmd_me, "sub": cmd_sub,
     "redeem": cmd_redeem, "ref": cmd_ref, "leaderboard": cmd_leaderboard,
     "stats": cmd_stats, "setcountry": cmd_setcountry, "fav": cmd_fav,
     "favadd": cmd_favadd, "gen": cmd_gen, "genv": cmd_genv, "bin": cmd_bin,
@@ -2014,33 +2092,48 @@ async def on_cmd(update, ctx):
     parts = msg.text.split()
     if not parts: return
     cmd_full = parts[0][1:].split("@")[0].lower()
-    args = parts[1:]
     handler_name = COMMAND_MAP.get(cmd_full)
-    if not handler_name: return
+    if not handler_name:
+        try:
+            await msg.reply_text(
+                f"❓ Unknown command: <code>/{cmd_full}</code>\n\n"
+                f"Use <code>/help</code> or tap the menu.",
+                parse_mode="HTML", reply_markup=kb_main())
+        except: pass
+        return
     handler = HANDLERS.get(handler_name)
-    if not handler: return
-    ctx.args = args
+    if not handler:
+        try: await msg.reply_text(f"⚠️ Handler missing for /{cmd_full}")
+        except: pass
+        return
+    ctx.args = parts[1:]
     try:
         await handler(update, ctx)
     except Exception as e:
         log.exception(f"/{cmd_full}: {e}")
-        try: await msg.reply_text(f"❌ Error: {e}")
+        try: await msg.reply_text(f"❌ Error: {str(e)[:200]}")
         except: pass
 
 async def on_callback(update, ctx):
+    try:
+        await _on_callback_inner(update, ctx)
+    except Exception as e:
+        log.exception(f"callback: {e}")
+        try: await update.callback_query.answer(f"❌ Error: {str(e)[:80]}", show_alert=True)
+        except: pass
+
+async def _on_callback_inner(update, ctx):
     q = update.callback_query; d = q.data or ""
     u = q.from_user; s = state(u.id)
     if not in_group(update) and not in_dm(update):
         await q.answer("Denied", show_alert=True); return
     await q.answer()
 
-    # proxy callbacks
     if d == "proxy_menu":
         st = _pstate(u.id)
         running = "⏳ Running" if st["running"] else "🟢 Idle"
         txt = (f"🕸️ <b>Proxy Scraper</b>\n\nStatus: {running}\nCached: {len(st['valid'])}\n"
-               f"Collected: {st['stats'].get('collected',0)}\n\n"
-               f"🔒 All → DM")
+               f"Collected: {st['stats'].get('collected',0)}\n\n🔒 All → DM")
         if in_dm(update): await q.edit_message_text(txt, parse_mode="HTML", reply_markup=kb_proxy_menu())
         else: await q.edit_message_text(txt + "\n\n📩 Tap:", parse_mode="HTML", reply_markup=kb_dm_only())
         return
@@ -2097,23 +2190,25 @@ async def on_callback(update, ctx):
         await q.edit_message_text(f"🔍 Testing <code>{proxy}</code>...", parse_mode="HTML")
         r = await asyncio.get_event_loop().run_in_executor(POOL, _p_test_detailed, proxy)
         if r.get("alive"):
-            rt = "".join(f"  {'✅' if ok else '❌'} {name}: {lat}ms\n" if lat is not None else f"  ❌ {name}: timeout\n"
-                         for name, ok, lat in r["results"])
-            text = (f"✅ <b>ALIVE</b>\n\n🌐 <code>{proxy}</code>\n📊 {r['working']}/{r['total']} · ⚡ {r['latency']}ms\n"
+            rt = "".join(
+                f"  {'✅' if ok else '❌'} {name}: {lat}ms\n" if lat is not None
+                else f"  ❌ {name}: timeout\n"
+                for name, ok, lat in r["results"])
+            text = (f"✅ <b>ALIVE</b>\n\n🌐 <code>{proxy}</code>\n\n"
+                    f"📊 {r['working']}/{r['total']} · ⚡ {r['latency']}ms\n"
                     f"📡 {r.get('detected_ip') or '—'}\n\n<b>Endpoints:</b>\n{rt}")
             if proxy not in _pstate(u.id)["valid"]:
                 _pstate(u.id)["valid"].append(proxy); _save_proxy_live(u.id, proxy)
             await q.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Again", callback_data=f"chk|{proxy}")],
-                [InlineKeyboardButton("⬅️", callback_data="proxy_menu")]]))
+                [InlineKeyboardButton("⬅️ Menu", callback_data="proxy_menu")]]))
         else:
-            await q.edit_message_text(f"❌ <b>DEAD</b>\n\n<code>{proxy}</code>", parse_mode="HTML",
-                                        reply_markup=InlineKeyboardMarkup([
+            await q.edit_message_text(f"❌ <b>DEAD</b>\n\n🌐 <code>{proxy}</code>",
+                                        parse_mode="HTML", reply_markup=InlineKeyboardMarkup([
                                             [InlineKeyboardButton("🔄 Again", callback_data=f"chk|{proxy}")],
-                                            [InlineKeyboardButton("⬅️", callback_data="proxy_menu")]]))
+                                            [InlineKeyboardButton("⬅️ Menu", callback_data="proxy_menu")]]))
         return
 
-    # ═══ ADMIN callbacks ═══
     if d.startswith("adm:"):
         if u.id != ADMIN_ID or update.effective_chat.type != "private":
             await q.answer("⛔", show_alert=True); return
@@ -2169,7 +2264,6 @@ async def on_callback(update, ctx):
                 parse_mode="HTML", reply_markup=kb_admin()); return
         return
 
-    # ═══ HELP menu ═══
     if d.startswith("help:"):
         cat = d.split(":")[1]
         texts = {
@@ -2180,7 +2274,6 @@ async def on_callback(update, ctx):
         }
         await q.edit_message_text(texts.get(cat, "—"), parse_mode="HTML", reply_markup=kb_help()); return
 
-    # ═══ Menu navigation ═══
     if d == "noop": return
     if d == "bk":
         await q.edit_message_text("📖 <b>Menu</b>", parse_mode="HTML", reply_markup=kb_main()); return
@@ -2213,7 +2306,6 @@ async def on_callback(update, ctx):
         total, cards = db_stats(u.id)
         await q.edit_message_text(f"📊 {total} req · {cards:,} cards", parse_mode="HTML", reply_markup=kb_back()); return
 
-    # ═══ Card actions ═══
     if d.startswith("cp|"):
         await q.answer(f"Copied: {d.split('|',1)[1]}", show_alert=True); return
     if d.startswith("ca|"):
@@ -2288,9 +2380,6 @@ async def on_callback(update, ctx):
         except: pass
         return
 
-# ═══════════════════════════════════════════════════════════════════
-# DOCUMENT HANDLER
-# ═══════════════════════════════════════════════════════════════════
 async def on_document(update, ctx):
     u = update.effective_user; s = state(u.id); awaiting = s.get("awaiting")
     if awaiting not in ("checkfile", "clear_file", "mchk_file"): return
@@ -2310,32 +2399,42 @@ async def on_document(update, ctx):
     elif awaiting == "clear_file": await _process_clear(update, ctx, content, fname)
     elif awaiting == "mchk_file": await _process_mchk_file(update, ctx, content, fname)
 
-# ═══════════════════════════════════════════════════════════════════
-# TEXT HANDLER
-# ═══════════════════════════════════════════════════════════════════
 async def on_text(update, ctx):
     u = update.effective_user; s = state(u.id); awaiting = s.get("awaiting")
+
     if awaiting == "checkproxy_input":
         txt = (update.message.text or "").strip()
         m = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[:\s]+(\d{1,5})', txt)
         if not m:
-            await update.message.reply_text("❌ Format: IP:PORT"); return
+            await update.message.reply_text(
+                "❌ Format: <code>IP:PORT</code>\nExample: <code>1.2.3.4:8080</code>",
+                parse_mode="HTML", reply_markup=kb_clear_prompt()); return
         ip, port = m.group(1), m.group(2)
         if not _p_ip_ok(ip) or not (1 <= int(port) <= 65535):
-            await update.message.reply_text("❌ Invalid"); return
+            await update.message.reply_text("❌ Invalid IP/port"); return
         s["awaiting"] = None
         proxy = f"{ip}:{port}"
         r = await asyncio.get_event_loop().run_in_executor(POOL, _p_test_detailed, proxy)
         if r.get("alive"):
-            await update.message.reply_text(f"✅ <b>ALIVE</b>\n<code>{proxy}</code>\n⚡ {r['latency']}ms\n📡 {r.get('detected_ip') or '—'}",
-                                              parse_mode="HTML", reply_markup=kb_proxy_menu())
+            await update.message.reply_text(
+                f"✅ <b>ALIVE</b>\n<code>{proxy}</code>\n⚡ {r['latency']}ms\n📡 {r.get('detected_ip') or '—'}",
+                parse_mode="HTML", reply_markup=kb_proxy_menu())
             if proxy not in _pstate(u.id)["valid"]:
                 _pstate(u.id)["valid"].append(proxy); _save_proxy_live(u.id, proxy)
         else:
-            await update.message.reply_text(f"❌ <b>DEAD</b>\n<code>{proxy}</code>", parse_mode="HTML", reply_markup=kb_proxy_menu())
+            await update.message.reply_text(
+                f"❌ <b>DEAD</b>\n<code>{proxy}</code>",
+                parse_mode="HTML", reply_markup=kb_proxy_menu())
         return
-    if awaiting:
-        return  # waiting for a file; ignore text
+
+    if awaiting in ("checkfile", "clear_file", "mchk_file"):
+        await update.message.reply_text(
+            "📎 <b>Upload a file, not text</b>\n\n"
+            "Send .txt or .csv (max 5MB).\n\n<i>/cancel to abort</i>",
+            parse_mode="HTML", reply_markup=kb_clear_prompt()); return
+
+    if awaiting: return
+
     if not in_group(update): return
     d = re.sub(r"\D","", update.message.text or "")
     if 4 <= len(d) <= 19:
@@ -2346,9 +2445,6 @@ async def on_text(update, ctx):
                 f"<code>/gen {d}|5</code> · <code>/genv {d}|02|28</code> · <code>/bin {d}</code>",
                 parse_mode="HTML", reply_markup=kb_dm_only())
 
-# ═══════════════════════════════════════════════════════════════════
-# ERROR + POST_INIT + MAIN
-# ═══════════════════════════════════════════════════════════════════
 async def on_error(update, ctx):
     log.exception("Error", exc_info=ctx.error)
 
@@ -2362,7 +2458,14 @@ async def post_init(app):
         cmds_list = [BotCommand(alias, handler.capitalize()) for alias, handler in list(COMMAND_MAP.items())[:30]]
         await app.bot.set_my_commands(cmds_list)
     except: pass
-    log.info(f"Bot @{BOT_USERNAME} · {len(COMMAND_MAP)} commands")
+    log.info(
+        f"\n╔════════════════════════════════════════╗\n"
+        f"║  ✅ Luuln Bot Online                   ║\n"
+        f"║  @{BOT_USERNAME:<38}║\n"
+        f"║  Commands: {len(COMMAND_MAP):<28}║\n"
+        f"║  Tier limit: {SUB_TIERS['vip']['rate']} req/hr (VIP)        ║\n"
+        f"╚════════════════════════════════════════╝"
+    )
 
 def main():
     if not BOT_TOKEN:
